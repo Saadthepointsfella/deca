@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  @apply bg-slate-950 text-slate-100;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+code {
+  @apply font-mono text-xs bg-slate-900 rounded px-1 py-0.5;
+}

@@ -1,0 +1,15 @@
+{
+  "name": "control-plane",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "pnpm --filter backend dev",
+    "dev:frontend": "pnpm --filter frontend dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
