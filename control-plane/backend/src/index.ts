@@ -1,22 +1,27 @@
 // backend/src/index.ts
-import { authRoutes } from "./auth/routes";
+import { adminRoutes } from "./admin/routes";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { policyRoutes } from "./policy/routes";
+
 import { config } from "./config";
 import { logger } from "./shared/logger";
 import { assertDbConnection } from "./shared/db";
 import { errorHandler } from "./shared/errorMapper";
 import { registry, httpRequestDurationMs } from "./shared/metrics";
 
+import { authRoutes } from "./auth/routes";
 import { identityRoutes } from "./identity/routes";
-
 import { plansRoutes } from "./plans/routes";
 import { usageRoutes } from "./usage/routes";
 import { supportRoutes } from "./support/routes";
 import { auditRoutes } from "./audit/routes";
 
+import { apiKeysRoutes } from "./apikeys/routes";
+import { tryAttachApiKey } from "./auth/apiKeyGuard";
+import { allow } from "./shared/rateLimit";
+
 async function buildServer() {
-  // Use a verbose logger in dev; quieter in prod
   const app = Fastify({
     logger: {
       level: config.nodeEnv === "production" ? "info" : "debug",
@@ -39,20 +44,32 @@ async function buildServer() {
     credentials: true,
   });
 
+  // Attach API key context + basic per-IP rate limiting
+  app.addHook("onRequest", async (req, reply) => {
+    // Try to attach apiKey from Authorization: Bearer <secret>
+    await tryAttachApiKey(req);
+
+    // Simple in-memory IP rate limit (dev-friendly)
+    const ip = req.ip || "0.0.0.0";
+    if (!allow(`ip:${ip}`, config.ipRatePerMin)) {
+      return reply
+        .code(429)
+        .send({ error: { code: "RATE_LIMIT", message: "IP rate limit exceeded" } });
+    }
+  });
+
   // Perf histogram: record duration per route/method/status
   app.addHook("onResponse", async (req, reply) => {
     try {
-      // Best-effort route id; fall back to URL if missing
       const route =
         // @ts-expect-error fastify typings vary for context
         reply.context?.config?.url || (req as any).routerPath || req.url || "unknown";
       const method = req.method;
       const status = String(reply.statusCode);
-      // Fastify exposes response time when logger/timing is enabled
       const durationMs =
         typeof (reply as any).getResponseTime === "function"
           ? (reply as any).getResponseTime()
-          : Number(reply.elapsedTime || 0);
+          : Number((reply as any).elapsedTime || 0);
       httpRequestDurationMs.labels({ route, method, status }).observe(durationMs);
     } catch {
       // never throw in hooks
@@ -70,12 +87,17 @@ async function buildServer() {
   });
 
   // Domain routes
+  app.register(policyRoutes,  { prefix: "/api" });
+
   app.register(authRoutes, { prefix: "/api" });
   app.register(identityRoutes, { prefix: "/api" });
   app.register(plansRoutes, { prefix: "/api" });
+    app.register(adminRoutes,  { prefix: "/api" });   // <— add this
+
   app.register(usageRoutes, { prefix: "/api" });
   app.register(supportRoutes, { prefix: "/api" });
   app.register(auditRoutes, { prefix: "/api" });
+  app.register(apiKeysRoutes, { prefix: "/api" });
 
   // Centralized error handler (maps domain/validation → HTTP codes)
   app.setErrorHandler(errorHandler);

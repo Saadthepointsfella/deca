@@ -4,7 +4,7 @@ const API_BASE_URL =
 
 /**
  * Get the backend JWT from the NextAuth session.
- * - On the server: uses getServerSession()
+ * - On the server: uses no-op (we only fetch from client in this setup)
  * - On the client: calls /api/auth/session
  */
 async function getBackendToken(): Promise<string | null> {
@@ -42,7 +42,9 @@ async function request<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API ${path} failed: ${res.status} ${res.statusText} ${text}`);
+    throw new Error(
+      `API ${path} failed: ${res.status} ${res.statusText} ${text}`
+    );
   }
 
   return (await res.json()) as T;
@@ -56,6 +58,17 @@ function qs(params: Record<string, string | number | boolean | undefined>) {
   const s = u.toString();
   return s ? `?${s}` : "";
 }
+
+// Shared type for policy config
+type PolicyConfigDTO = {
+  spike_sensitivity: {
+    FREE: number;
+    PRO: number;
+    ENTERPRISE: number;
+  };
+  overdraft_factor: number;
+  free_tier_reserve: number;
+};
 
 export const api = {
   // -------- Orgs / Plans --------
@@ -92,14 +105,19 @@ export const api = {
     ),
 
   // -------- Usage --------
-  checkUsage: (payload: { orgId: string; units: number; endpoint: string }) =>
-    request<{ decision: "ALLOW" | "THROTTLE" | "BLOCK"; delayMs: number; reason: string }>(
-      "/usage/check",
-      {
-        method: "POST",
-        body: JSON.stringify(payload),
-      }
-    ),
+  checkUsage: (payload: {
+    orgId: string;
+    units: number;
+    endpoint: string;
+  }) =>
+    request<{
+      decision: "ALLOW" | "THROTTLE" | "BLOCK";
+      delayMs: number;
+      reason: string;
+    }>("/usage/check", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 
   getUsageOverview: (orgId: string) =>
     request<{
@@ -139,13 +157,101 @@ export const api = {
     orgId?: string;
     limit?: number;
   } = {}) =>
-    request<{ tickets: any[] }>(
-      `/support/tickets${qs(opts)}`
-    ),
+    request<{ tickets: any[] }>(`/support/tickets${qs(opts)}`),
 
-  updateTicketStatus: (id: string, status: "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED") =>
+  updateTicketStatus: (
+    id: string,
+    status: "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED"
+  ) =>
     request<{ ok: true }>(`/support/tickets/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ status }),
     }),
+
+  // -------- API Keys (ADMIN+) --------
+  listApiKeys: (orgId: string) =>
+    request<{
+      keys: Array<{
+        id: string;
+        name: string;
+        secret_prefix: string;
+        created_at: string;
+        revoked_at: string | null;
+      }>;
+    }>(`/api-keys${qs({ orgId })}`),
+
+  createApiKey: (orgId: string, name: string) =>
+    request<{
+      key: {
+        id: string;
+        org_id: string;
+        name: string;
+        secret: string;
+        secret_prefix: string;
+        created_at: string;
+      };
+      note: string;
+    }>("/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ orgId, name }),
+    }),
+
+  revokeApiKey: (orgId: string, id: string) =>
+    request<{ ok: true }>("/api-keys/revoke", {
+      method: "POST",
+      body: JSON.stringify({ orgId, id }),
+    }),
+
+  // -------- Policy Configurator (Mechanism Design) --------
+  getPolicyConfig: () =>
+    request<{ config: PolicyConfigDTO }>("/policy/config"),
+
+  putPolicyConfig: (config: PolicyConfigDTO) =>
+    request<{ ok: true }>("/policy/config", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+
+  previewPolicy: (payload: {
+    orgId: string;
+    daily: number;
+    monthly: number;
+    spikeScore: number;
+  }) =>
+    request<{
+      decision: "ALLOW" | "THROTTLE" | "BLOCK";
+      reason: string;
+      planTier: "FREE" | "PRO" | "ENTERPRISE";
+      cfg: PolicyConfigDTO;
+    }>("/policy/preview", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  // -------- Admin (OWNER/ADMIN) --------
+  getAdminOverview: () =>
+    request<{
+      usageLeaderboard: {
+        org_id: string;
+        org_name: string;
+        plan_tier: string | null;
+        mtd_units: number;
+      }[];
+      tickets: {
+        openTickets: number;
+        breachedTickets: number;
+      };
+      decisions: {
+        total: number;
+        throttleCount: number;
+        blockCount: number;
+        throttlePct: number;
+        blockPct: number;
+      };
+      apiKeys: {
+        org_id: string;
+        org_name: string;
+        key_count: number;
+      }[];
+    }>("/admin/overview"),
 };

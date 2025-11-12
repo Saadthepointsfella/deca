@@ -11,64 +11,78 @@ export const metadata = {
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
-  // Server-side session fetch so the sidebar can reflect auth state immediately
+  // SSR session so the sidebar reflects auth immediately
   const session = await getServerSession(authOptions);
   const role =
     (session as any)?.role ??
     (session as any)?.user?.role ??
     undefined;
 
+  const isAdmin =
+    role === "OWNER" ||
+    role === "ADMIN";
+
   return (
     <html lang="en">
       <body className="min-h-screen">
         <SessionProvider>
-          <div className="flex min-h-screen">
-            <aside className="w-64 border-r border-slate-800 p-4 bg-slate-950">
-              <h1 className="text-xl font-semibold mb-6">Control Plane</h1>
+          {/* Compact monochrome grid layout */}
+          <div className="min-h-screen grid grid-cols-[220px_1fr]">
+            <aside className="border-r border-ink-800 bg-ink-950">
+              <div className="px-4 py-4">
+                <h1 className="text-base font-semibold tracking-wide">Control Plane</h1>
+                <div className="text-xs text-ink-400 mt-1">Monochrome</div>
+              </div>
 
-              <nav className="space-y-2 text-sm">
-                <Link href="/" className="block hover:text-white">
+              <nav className="px-2 py-2 text-sm">
+                <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/">
                   Overview
                 </Link>
-                <Link href="/orgs" className="block hover:text-white">
+                <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/orgs">
                   Orgs
                 </Link>
-                <Link href="/usage" className="block hover:text-white">
+                <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/usage">
                   Usage
                 </Link>
-                <Link href="/support" className="block hover:text-white">
+                <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/support">
                   Support
                 </Link>
-                <Link href="/settings" className="block hover:text-white">
+                <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/settings">
                   Settings
                 </Link>
 
+                {isAdmin && (
+                  <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/admin">
+                    Admin
+                  </Link>
+                )}
+              </nav>
+
+              <div className="px-4 py-4 border-t border-ink-800 text-xs text-ink-400">
                 {!session ? (
-                  <Link href="/login" className="block mt-6 text-emerald-400">
+                  <Link href="/login" className="underline">
                     Sign in
                   </Link>
                 ) : (
-                  <div className="mt-6 space-y-2">
-                    <form action="/api/auth/signout" method="post">
-                      <button className="text-rose-400 hover:text-rose-300" type="submit">
-                        Sign out
-                      </button>
+                  <>
+                    <div className="truncate">{session.user?.email}</div>
+                    {role && (
+                      <div className="mt-0.5">
+                        role:{" "}
+                        <span className="text-ink-300">
+                          {String(role).toUpperCase()}
+                        </span>
+                      </div>
+                    )}
+                    <form action="/api/auth/signout" method="post" className="mt-2">
+                      <button className="underline">Sign out</button>
                     </form>
-                    <div className="text-xs text-slate-400">
-                      {session.user?.email}
-                      {role ? (
-                        <>
-                          {" "}
-                          • <span className="uppercase">{String(role)}</span>
-                        </>
-                      ) : null}
-                    </div>
-                  </div>
+                  </>
                 )}
-              </nav>
+              </div>
             </aside>
 
-            <main className="flex-1 p-6 bg-slate-950">{children}</main>
+            <main className="p-6 bg-ink-950 text-ink-100">{children}</main>
           </div>
         </SessionProvider>
       </body>

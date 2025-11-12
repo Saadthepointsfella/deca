@@ -1,5 +1,6 @@
 // backend/src/usage/routes.ts
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import { loadPolicyConfig } from "../policy/config.store";
 import { z } from "zod";
 import { recordUsageAndGetSummary } from "./service";
 import { getPlanForOrgOrThrow } from "../plans/service";
@@ -8,35 +9,91 @@ import { logUsageDecision } from "../audit/service";
 import { validateBody, validateQuery } from "../shared/validate";
 import { usageBlockTotal, usageThrottleTotal } from "../shared/metrics";
 import { getDailySeries, getMonthToDate, getRecentDecisions } from "./overview";
+import { allow } from "../shared/rateLimit";
+import { config } from "../config";
 
 export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOptions) {
   app.post("/usage/check", async (req) => {
+    // orgId is optional here: if an API key is attached, we'll override it
     const body = validateBody(req, z.object({
-      orgId: z.string().min(1),
+      orgId: z.string().min(1).optional(),
       units: z.number().int().positive(),
       endpoint: z.string().min(1),
     }));
 
-    const plan = await getPlanForOrgOrThrow(body.orgId);
-    const { summary } = await recordUsageAndGetSummary({
-      orgId: body.orgId, subjectType: "ORG", subjectId: null, units: body.units, endpoint: body.endpoint,
-    });
+    let orgId = body.orgId;
+
+    // If an API key was attached on onRequest (auth/apiKeyGuard), use it
+    if (req.apiKey) {
+      orgId = req.apiKey.org_id;
+
+      // Per-key rate limit
+      const ok = allow(`key:${req.apiKey.id}`, config.apiKeyRatePerMin);
+      if (!ok) {
+        const decision = {
+          type: "THROTTLE" as const,
+          delayMs: 1000,
+          reason: "Per-key rate limit exceeded",
+        };
+
+        usageThrottleTotal.inc();
+
+        await logUsageDecision({
+          orgId,
+          subjectType: "ORG",
+          subjectId: null,
+          decision,
+          units: body.units,
+          endpoint: body.endpoint,
+        });
+
+        return {
+          decision: decision.type,
+          delayMs: decision.delayMs,
+          reason: decision.reason,
+        };
+      }
+    }
+
+    // No API key → require orgId in body
+    if (!orgId) {
+      const err: any = new Error("orgId is required when no API key is provided");
+      err.name = "BadRequestError";
+      throw err;
+    }
+
+    const [plan, { summary }, cfg] = await Promise.all([
+      getPlanForOrgOrThrow(orgId),
+      recordUsageAndGetSummary({
+        orgId,
+        subjectType: "ORG",
+        subjectId: null,
+        units: body.units,
+        endpoint: body.endpoint,
+      }),
+      loadPolicyConfig(),
+    ]);
 
     const decision = evaluateUsagePolicy({
-      orgId: body.orgId,
+      orgId,
       plan,
       recentUsage: { daily: summary.daily, monthly: summary.monthly },
       spikeScore: summary.spikeScore,
       subjectType: "ORG",
       subjectId: null,
+      policy: cfg,
     });
 
     if (decision.type === "THROTTLE") usageThrottleTotal.inc();
     if (decision.type === "BLOCK") usageBlockTotal.inc();
 
     await logUsageDecision({
-      orgId: body.orgId, subjectType: "ORG", subjectId: null,
-      decision, units: body.units, endpoint: body.endpoint,
+      orgId,
+      subjectType: "ORG",
+      subjectId: null,
+      decision,
+      units: body.units,
+      endpoint: body.endpoint,
     });
 
     return {

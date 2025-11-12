@@ -8,8 +8,15 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function toNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export const config = {
-  port: Number(process.env.BACKEND_PORT ?? 4000),
+  port: toNumber("BACKEND_PORT", 4000),
   databaseUrl: requireEnv("DATABASE_URL"),
   nodeEnv: process.env.NODE_ENV ?? "development",
   isProduction: process.env.NODE_ENV === "production",
@@ -20,4 +27,9 @@ export const config = {
 
   // 🔐 Auth (Phase 2)
   jwtSecret: requireEnv("JWT_SECRET"),
+
+  // 🚦 Rate limiting (Phase 2: API Keys + Service Access)
+  // Requests/minute limits; used by in-memory token buckets (swap to Redis later).
+  apiKeyRatePerMin: toNumber("APIKEY_RATE_PER_MIN", 600),
+  ipRatePerMin: toNumber("IP_RATE_PER_MIN", 1200),
 };
