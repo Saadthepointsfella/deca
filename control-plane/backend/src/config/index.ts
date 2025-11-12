@@ -13,6 +13,11 @@ export const config = {
   databaseUrl: requireEnv("DATABASE_URL"),
   nodeEnv: process.env.NODE_ENV ?? "development",
   isProduction: process.env.NODE_ENV === "production",
+
+  // Feature flags
   metricsEnabled: process.env.METRICS_ENABLED !== "false",
   requestLogging: process.env.REQUEST_LOGGING !== "false",
+
+  // 🔐 Auth (Phase 2)
+  jwtSecret: requireEnv("JWT_SECRET"),
 };

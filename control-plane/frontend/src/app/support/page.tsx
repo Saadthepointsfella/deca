@@ -1,11 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { useSession } from "next-auth/react";
 import { api } from "../../lib/apiClient";
 
 type TicketPriority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
 
 export default function SupportPage() {
+  const { data: session } = useSession();
+  const role =
+    (session as any)?.role ||
+    ((session?.user as unknown as { role?: string })?.role ?? "VIEWER");
+  const canAgent = role === "OWNER" || role === "ADMIN" || role === "AGENT";
+
   const [orgId, setOrgId] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -15,6 +22,7 @@ export default function SupportPage() {
   const [nextTicket, setNextTicket] = useState<any | null>(null);
   const [nextScore, setNextScore] = useState<number | null>(null);
   const [nextStatus, setNextStatus] = useState<string | null>(null);
+  const [resolving, setResolving] = useState<boolean>(false);
 
   const handleCreateTicket = async () => {
     try {
@@ -23,7 +31,7 @@ export default function SupportPage() {
         orgId,
         subject,
         body,
-        declaredPriority: priority
+        declaredPriority: priority,
       });
       setCreateStatus("created");
       setSubject("");
@@ -44,6 +52,22 @@ export default function SupportPage() {
     } catch (err: any) {
       console.error(err);
       setNextStatus(`error: ${err.message ?? "Failed"}`);
+    }
+  };
+
+  const handleResolve = async () => {
+    if (!nextTicket) return;
+    try {
+      setResolving(true);
+      await api.updateTicketStatus(nextTicket.id, "RESOLVED");
+      setNextTicket(null);
+      setNextScore(null);
+    } catch (err: any) {
+      console.error(err);
+      // surface as a one-line status below the button
+      setNextStatus(`error: ${err.message ?? "Failed to resolve"}`);
+    } finally {
+      setResolving(false);
     }
   };
 
@@ -95,14 +119,34 @@ export default function SupportPage() {
       </section>
 
       <section>
-        <h2 className="text-2xl font-semibold mb-4">Next Ticket</h2>
-        <button
-          className="bg-emerald-600 hover:bg-emerald-500 text-sm px-4 py-2 rounded disabled:opacity-50"
-          onClick={handleNextTicket}
-          disabled={nextStatus === "loading"}
-        >
-          {nextStatus === "loading" ? "Picking..." : "Get next ticket"}
-        </button>
+        <h2 className="text-2xl font-semibold mb-2">Next Ticket</h2>
+        {!canAgent && (
+          <p className="text-xs text-slate-500 mb-3">
+            You need <span className="font-medium">AGENT</span> or higher to triage tickets.
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            className="bg-emerald-600 hover:bg-emerald-500 text-sm px-4 py-2 rounded disabled:opacity-50"
+            onClick={handleNextTicket}
+            disabled={!canAgent || nextStatus === "loading"}
+            title={!canAgent ? "Requires AGENT role" : undefined}
+          >
+            {nextStatus === "loading" ? "Picking..." : "Get next ticket"}
+          </button>
+
+          {nextTicket && (
+            <button
+              className="bg-rose-600 hover:bg-rose-500 text-sm px-4 py-2 rounded disabled:opacity-50"
+              onClick={handleResolve}
+              disabled={!canAgent || resolving}
+              title={!canAgent ? "Requires AGENT role" : undefined}
+            >
+              {resolving ? "Resolving..." : "Resolve"}
+            </button>
+          )}
+        </div>
+
         {nextStatus && (
           <p className="text-xs text-slate-400 mt-2">{nextStatus}</p>
         )}
@@ -118,8 +162,7 @@ export default function SupportPage() {
               Org: <span className="font-mono">{nextTicket.org_id}</span>
             </p>
             <p className="text-xs text-slate-400">
-              Status: {nextTicket.status} • Priority:{" "}
-              {nextTicket.declared_priority}
+              Status: {nextTicket.status} • Priority: {nextTicket.declared_priority}
             </p>
             {nextScore !== null && (
               <p className="text-xs text-slate-400 mt-1">
@@ -136,8 +179,8 @@ export default function SupportPage() {
         )}
 
         <p className="mt-4 text-xs text-slate-500">
-          This exercises <code>GET /support/next</code> and the ticket priority
-          policy.
+          This exercises <code>GET /support/next</code> and the ticket priority policy. Resolving uses{" "}
+          <code>PATCH /support/tickets/:id</code>.
         </p>
       </section>
     </div>
