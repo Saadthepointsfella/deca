@@ -1,32 +1,43 @@
-import { getDb } from "../shared/db";
-import type { PolicyConfig } from "./types";
-import { DEFAULT_POLICY_CONFIG } from "./types";
+// backend/src/policy/config.store.ts
 
-// Load from DB and merge over defaults
-export async function loadPolicyConfig(): Promise<PolicyConfig> {
+import { getDb } from "../shared/db";
+import type { PolicyConfigV2 } from "./types";
+import { DEFAULT_POLICY_CONFIG_V2 } from "./types";
+
+export async function loadPolicyConfig(): Promise<PolicyConfigV2> {
   const db = getDb();
-  const res = await db.query<{ value: any }>(`SELECT value FROM policy_config WHERE key='global' LIMIT 1`);
+  const res = await db.query<{ value: any }>(
+    `SELECT value FROM policy_config WHERE key = 'global' LIMIT 1`
+  );
   const row = res.rows[0]?.value ?? {};
-  return deepMerge(DEFAULT_POLICY_CONFIG, row);
+  return deepMerge(DEFAULT_POLICY_CONFIG_V2, row);
 }
 
-export async function savePolicyConfig(value: PolicyConfig): Promise<void> {
+export async function savePolicyConfig(value: PolicyConfigV2): Promise<void> {
   const db = getDb();
   await db.query(
-    `INSERT INTO policy_config(key, value) VALUES('global', $1)
+    `INSERT INTO policy_config(key, value)
+     VALUES('global', $1)
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
     [value]
   );
 }
 
-// simple shallow+nested merge for our keys
+// simple nested merge: config from DB overrides defaults, but keeps shape
 function deepMerge<T extends object>(base: T, patch: any): T {
-  const out: any = { ...base };
-  for (const k of Object.keys(patch || {})) {
-    const bv: any = (base as any)[k];
-    const pv: any = patch[k];
-    if (bv && typeof bv === "object" && !Array.isArray(bv) && pv && typeof pv === "object" && !Array.isArray(pv)) {
-      out[k] = { ...bv, ...pv };
+  if (!patch || typeof patch !== "object") return base;
+  const out: any = Array.isArray(base) ? [...(base as any)] : { ...base };
+  for (const [k, pv] of Object.entries(patch)) {
+    const bv = (base as any)[k];
+    if (
+      bv &&
+      typeof bv === "object" &&
+      !Array.isArray(bv) &&
+      pv &&
+      typeof pv === "object" &&
+      !Array.isArray(pv)
+    ) {
+      out[k] = deepMerge(bv, pv);
     } else {
       out[k] = pv;
     }

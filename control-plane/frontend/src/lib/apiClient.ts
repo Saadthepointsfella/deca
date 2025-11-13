@@ -42,6 +42,13 @@ async function request<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+
+    // Auto-redirect to login on 401 (expired/invalid token)
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.location.href = "/login";
+      throw new Error("Session expired - redirecting to login");
+    }
+
     throw new Error(
       `API ${path} failed: ${res.status} ${res.statusText} ${text}`
     );
