@@ -1,12 +1,19 @@
 // backend/src/support/routes.ts
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { z } from "zod";
-import { createTicketWithSla, getNextTicket } from "./service";
+import { createTicketWithSla } from "./service";
 import { listTickets, updateTicketStatus } from "./repository";
 import { validateBody, validateParams, validateQuery } from "../shared/validate";
 import type { TicketPriority, TicketStatus } from "./types";
 import { requireAuth, requireRole } from "../auth/guards";
 import { roleAtLeast, type Role } from "../shared/roles";
+
+import { loadPolicyConfig } from "../policy/config.store";
+import { getEffectiveAbuseScore, bumpAbuseScore } from "../policy/abuse.store";
+import { computeTicketPriorityScore, type TicketSlaStatus } from "../policy/supportPolicy";
+import type { Tier } from "../policy/types";
+import { getPlanForOrgOrThrow } from "../plans/service";
+import { getDb } from "../shared/db";
 
 export async function supportRoutes(app: FastifyInstance, _opts: FastifyPluginOptions) {
   // Any authenticated user can open a ticket.
@@ -39,6 +46,41 @@ export async function supportRoutes(app: FastifyInstance, _opts: FastifyPluginOp
         body,
         declaredPriority: declaredPriority as TicketPriority,
       });
+
+      // --- Abuse: urgent-ticket ratio bump (simple) ---
+      try {
+        const cfg = await loadPolicyConfig();
+        const threshold = cfg.abuse.urgent_ticket_ratio_threshold;
+        if (threshold > 0) {
+          const db = getDb();
+          const since = new Date(Date.now() - 24 * 60 * 60 * 1000); // last 24h
+          const res = await db.query<{
+            total: number;
+            urgent: number;
+          }>(
+            `
+            SELECT
+              COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE declared_priority = 'URGENT')::int AS urgent
+            FROM tickets
+            WHERE org_id = $1 AND created_at >= $2
+            `,
+            [orgId, since.toISOString()]
+          );
+          const row = res.rows[0] ?? { total: 0, urgent: 0 };
+          if (row.total > 0) {
+            const ratio = row.urgent / row.total;
+            if (ratio > threshold) {
+              const overshoot = ratio - threshold;
+              // Bump abuse a bit, capped
+              await bumpAbuseScore(orgId, Math.min(5, overshoot * 10));
+            }
+          }
+        }
+      } catch {
+        // best-effort; do not block ticket creation on abuse scoring errors
+      }
+
       return reply.code(201).send({ ticket });
     }
   );
@@ -99,15 +141,83 @@ export async function supportRoutes(app: FastifyInstance, _opts: FastifyPluginOp
   );
 
   // "Next ticket" triage requires AGENT+.
-  // We pass the current agent's userId down to service.
+  // Uses policy config, fairness knobs, and org abuse score to pick the best ticket.
   app.get(
     "/support/next",
     { preHandler: [requireAuth, requireRole("AGENT")] },
     async (req) => {
       const agentUserId: string | null = req.user?.id ?? null;
-      const result = await getNextTicket(agentUserId);
-      if (!result) return { ticket: null, score: null };
-      return result;
+      void agentUserId; // reserved for future attribution
+
+      // For triage we look at OPEN tickets across orgs (limited).
+      const tickets = await listTickets({
+        status: "OPEN" as TicketStatus,
+        orgId: undefined,
+        limit: 100,
+      });
+
+      if (!tickets || tickets.length === 0) {
+        return { ticket: null, score: null };
+      }
+
+      const cfg = await loadPolicyConfig();
+
+      // Preload plans and abuse scores by org
+      const orgIds = Array.from(new Set(tickets.map((t: any) => t.org_id as string)));
+      const planByOrg = new Map<string, { tier: Tier }>();
+      const abuseByOrg = new Map<string, number>();
+
+      await Promise.all(
+        orgIds.map(async (orgId) => {
+          const plan = await getPlanForOrgOrThrow(orgId);
+          planByOrg.set(orgId, { tier: plan.tier as Tier });
+
+          const abuse = await getEffectiveAbuseScore(orgId, cfg);
+          abuseByOrg.set(orgId, abuse);
+        })
+      );
+
+      const now = Date.now();
+
+      let bestTicket: any = null;
+      let bestScore = -Infinity;
+
+      for (const t of tickets as any[]) {
+        const orgId = t.org_id as string;
+        const plan = planByOrg.get(orgId);
+        if (!plan) continue;
+
+        const createdAt = new Date(t.created_at).getTime();
+        const waitMinutes = (now - createdAt) / 60000;
+
+        const slaDeadline = t.sla_deadline ? new Date(t.sla_deadline).getTime() : null;
+        let slaStatus: TicketSlaStatus = "ON_TRACK";
+        if (slaDeadline != null) {
+          if (now > slaDeadline) slaStatus = "BREACHED";
+          else if (now > slaDeadline - 15 * 60 * 1000) slaStatus = "AT_RISK"; // within 15 minutes
+        }
+
+        const abuseScore = abuseByOrg.get(orgId) ?? 0;
+        const isFreeTier = plan.tier === "FREE";
+
+        const score = computeTicketPriorityScore({
+          planTier: plan.tier,
+          waitMinutes,
+          slaStatus,
+          declaredPriority: t.declared_priority,
+          abuseScore,
+          cfg,
+          isFreeTier,
+        });
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestTicket = t;
+        }
+      }
+
+      if (!bestTicket) return { ticket: null, score: null };
+      return { ticket: bestTicket, score: bestScore };
     }
   );
 }

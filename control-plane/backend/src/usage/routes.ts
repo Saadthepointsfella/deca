@@ -1,7 +1,8 @@
 // backend/src/usage/routes.ts
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
-import { loadPolicyConfig } from "../policy/config.store";
 import { z } from "zod";
+
+import { loadPolicyConfig } from "../policy/config.store";
 import { recordUsageAndGetSummary } from "./service";
 import { getPlanForOrgOrThrow } from "../plans/service";
 import { evaluateUsagePolicy } from "../policy/usagePolicy";
@@ -11,6 +12,7 @@ import { usageBlockTotal, usageThrottleTotal } from "../shared/metrics";
 import { getDailySeries, getMonthToDate, getRecentDecisions } from "./overview";
 import { allow } from "../shared/rateLimit";
 import { config } from "../config";
+import { getEffectiveAbuseScore, bumpAbuseScore } from "../policy/abuse.store";
 
 export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOptions) {
   app.post("/usage/check", async (req) => {
@@ -74,6 +76,16 @@ export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOpti
       loadPolicyConfig(),
     ]);
 
+    // Compute effective abuse score (with decay) for this org
+    const abuseScore = await getEffectiveAbuseScore(orgId, cfg);
+
+    // If spikeScore is above the suspicious threshold, bump abuse score slightly
+    if (summary.spikeScore > cfg.abuse.suspicious_spike_score) {
+      const overshoot = summary.spikeScore - cfg.abuse.suspicious_spike_score;
+      // Small bump, capped to avoid runaway
+      void bumpAbuseScore(orgId, Math.min(5, overshoot));
+    }
+
     const decision = evaluateUsagePolicy({
       orgId,
       plan,
@@ -82,6 +94,7 @@ export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOpti
       subjectType: "ORG",
       subjectId: null,
       policy: cfg,
+      abuseScore,
     });
 
     if (decision.type === "THROTTLE") usageThrottleTotal.inc();

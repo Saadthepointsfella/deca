@@ -17,6 +17,8 @@ export type UsagePolicyContext = {
   subjectType: UsageSubjectType;
   subjectId?: string | null;
   policy: PolicyConfigV2;
+  // NEW: decayed abuse score for this org (can be omitted)
+  abuseScore?: number;
 };
 
 export function evaluateUsagePolicy(ctx: UsagePolicyContext): UsageDecision {
@@ -25,6 +27,7 @@ export function evaluateUsagePolicy(ctx: UsagePolicyContext): UsageDecision {
     const { plan, recentUsage, spikeScore, policy } = ctx;
     const tier = plan.tier as Tier; // "FREE" | "PRO" | "ENTERPRISE"
     const { daily, monthly } = recentUsage;
+    const abuse = ctx.abuseScore ?? 0;
 
     // 1) Global panic switch
     if (policy.misc.global_block_switch && tier !== "ENTERPRISE") {
@@ -124,18 +127,21 @@ export function evaluateUsagePolicy(ctx: UsagePolicyContext): UsageDecision {
       }
     }
 
-    // 6) Combine decisions: BLOCK dominates, then worst THROTTLE, else ALLOW
+    // 6) Combine quota + spike decisions into a base decision
+    let baseDecision: UsageDecision;
+
     if (quotaDecision?.type === "BLOCK" || spikeDecision?.type === "BLOCK") {
-      return {
+      baseDecision = {
         type: "BLOCK",
         reason:
           quotaDecision?.type === "BLOCK"
             ? quotaDecision.reason
             : spikeDecision?.reason || "Blocked by policy",
       };
-    }
-
-    if (quotaDecision?.type === "THROTTLE" || spikeDecision?.type === "THROTTLE") {
+    } else if (
+      quotaDecision?.type === "THROTTLE" ||
+      spikeDecision?.type === "THROTTLE"
+    ) {
       const quotaDelay =
         quotaDecision?.type === "THROTTLE" ? quotaDecision.delayMs : 0;
       const spikeDelay =
@@ -147,15 +153,54 @@ export function evaluateUsagePolicy(ctx: UsagePolicyContext): UsageDecision {
         spikeDecision?.type === "THROTTLE" ? spikeDecision.reason : null,
       ].filter(Boolean) as string[];
 
-      return {
+      baseDecision = {
         type: "THROTTLE",
         delayMs: delay,
         reason: reasonParts.join(" + ") || "Throttled by policy",
       };
+    } else {
+      baseDecision = { type: "ALLOW", reason: "Within usage policy" };
     }
 
-    // 7) Default: allowed
-    return { type: "ALLOW", reason: "Within usage policy" };
+    // 7) Abuse adjustment layer
+    // Abuse score comes from decayed org_abuse_scores; we treat it as 0, low, medium, high.
+    const abuseLevel =
+      abuse > 10 ? "HIGH" : abuse > 3 ? "MEDIUM" : abuse > 0 ? "LOW" : "NONE";
+
+    if (abuseLevel === "HIGH") {
+      if (baseDecision.type === "ALLOW") {
+        // Upgrade to a small throttle
+        return {
+          type: "THROTTLE",
+          delayMs: 250,
+          reason: "Throttled due to sustained suspicious behavior",
+        };
+      }
+      if (baseDecision.type === "THROTTLE") {
+        const bumpedDelay = Math.min(
+          baseDecision.delayMs + 250,
+          policy.usage.throttle.max_delay_ms[tier] ?? 1000
+        );
+        return {
+          type: "THROTTLE",
+          delayMs: bumpedDelay,
+          reason: baseDecision.reason + " (abuse-adjusted)",
+        };
+      }
+      // If BLOCK, keep block as-is.
+      return baseDecision;
+    }
+
+    if (abuseLevel === "MEDIUM" && baseDecision.type === "ALLOW") {
+      // Keep ALLOW, but tag as under watch
+      return {
+        type: "ALLOW",
+        reason: "Within usage policy (under watch for suspicious behavior)",
+      };
+    }
+
+    // LOW / NONE: no change
+    return baseDecision;
   } finally {
     endTimer();
   }
