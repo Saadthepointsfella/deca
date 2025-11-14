@@ -50,6 +50,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                 <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/settings">
                   Settings
                 </Link>
+                <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/docs">
+                  Docs
+                </Link>
 
                 {isAdmin && (
                   <Link className="block px-2 py-1 rounded hover:bg-ink-900" href="/admin">

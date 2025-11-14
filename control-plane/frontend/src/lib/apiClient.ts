@@ -261,4 +261,21 @@ export const api = {
         key_count: number;
       }[];
     }>("/admin/overview"),
+ // ...existing
+  listAgents: (orgId: string) =>
+    request<{ agents: { id: string; name: string; description: string | null; model_key: string | null }[] }>(
+      `/agents?orgId=${encodeURIComponent(orgId)}`
+    ),
+
+  createAgent: (payload: {
+    orgId: string;
+    name: string;
+    description?: string;
+    modelKey?: string;
+  }) =>
+    request<{ agent: { id: string } }>(`/agents`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
+

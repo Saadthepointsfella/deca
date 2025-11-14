@@ -3,7 +3,7 @@ import { adminRoutes } from "./admin/routes";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { policyRoutes } from "./policy/routes";
-
+import { agentsRoutes } from "./agents/routes";
 import { config } from "./config";
 import { logger } from "./shared/logger";
 import { assertDbConnection } from "./shared/db";
@@ -20,6 +20,7 @@ import { auditRoutes } from "./audit/routes";
 import { apiKeysRoutes } from "./apikeys/routes";
 import { tryAttachApiKey } from "./auth/apiKeyGuard";
 import { allow } from "./shared/rateLimit";
+import { openapiSpec } from "./openapi/spec";
 
 async function buildServer() {
   const app = Fastify({
@@ -86,6 +87,11 @@ async function buildServer() {
     return reply.send(await registry.metrics());
   });
 
+  // OpenAPI spec
+  app.get("/api/openapi.json", async () => {
+    return openapiSpec;
+  });
+
   // Domain routes
   app.register(policyRoutes,  { prefix: "/api" });
 
@@ -98,6 +104,7 @@ async function buildServer() {
   app.register(supportRoutes, { prefix: "/api" });
   app.register(auditRoutes, { prefix: "/api" });
   app.register(apiKeysRoutes, { prefix: "/api" });
+  app.register(agentsRoutes, { prefix: "/api" });
 
   // Centralized error handler (maps domain/validation → HTTP codes)
   app.setErrorHandler(errorHandler);

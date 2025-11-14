@@ -95,3 +95,30 @@ export async function getActiveApiKeysSummary(limit: number) {
   );
   return res.rows;
 }
+
+export async function getAbuseBuckets(): Promise<{
+  zero: number;
+  low: number;
+  medium: number;
+  high: number;
+}> {
+  const db = getDb();
+  const res = await db.query<{ score: string }>(
+    `SELECT score::text FROM org_abuse_scores`
+  );
+
+  let zero = 0;
+  let low = 0;
+  let medium = 0;
+  let high = 0;
+
+  for (const row of res.rows) {
+    const s = Number(row.score);
+    if (s <= 0) zero++;
+    else if (s <= 3) low++;
+    else if (s <= 10) medium++;
+    else high++;
+  }
+
+  return { zero, low, medium, high };
+}

@@ -13,17 +13,30 @@ import { getDailySeries, getMonthToDate, getRecentDecisions } from "./overview";
 import { allow } from "../shared/rateLimit";
 import { config } from "../config";
 import { getEffectiveAbuseScore, bumpAbuseScore } from "../policy/abuse.store";
+import { logUsageDecisionRow } from "./decisionLog";
+import { getAgentForOrg } from "../agents/store";
+
+type UsageSubjectType = "ORG" | "AGENT" | "MODEL";
 
 export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOptions) {
   app.post("/usage/check", async (req) => {
     // orgId is optional here: if an API key is attached, we'll override it
-    const body = validateBody(req, z.object({
-      orgId: z.string().min(1).optional(),
-      units: z.number().int().positive(),
-      endpoint: z.string().min(1),
-    }));
+    const body = validateBody(
+      req,
+      z.object({
+        orgId: z.string().min(1).optional(),
+        units: z.number().int().positive(),
+        endpoint: z.string().min(1),
+        subjectType: z.enum(["ORG", "AGENT", "MODEL"]).optional(),
+        subjectId: z.string().optional(),
+      })
+    );
 
     let orgId = body.orgId;
+
+    // Determine requested subject (for metering + audit)
+    let subjectType: UsageSubjectType = body.subjectType ?? "ORG";
+    let subjectId: string | null = body.subjectId ?? null;
 
     // If an API key was attached on onRequest (auth/apiKeyGuard), use it
     if (req.apiKey) {
@@ -40,10 +53,11 @@ export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOpti
 
         usageThrottleTotal.inc();
 
+        // Audit log for rate-limit throttles, using requested subject
         await logUsageDecision({
           orgId,
-          subjectType: "ORG",
-          subjectId: null,
+          subjectType,
+          subjectId,
           decision,
           units: body.units,
           endpoint: body.endpoint,
@@ -64,7 +78,25 @@ export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOpti
       throw err;
     }
 
-    const [plan, { summary }, cfg] = await Promise.all([
+    // If caller wants AGENT metering, verify agent belongs to org
+    if (subjectType === "AGENT") {
+      if (!subjectId) {
+        const err: any = new Error("subjectId is required when subjectType=AGENT");
+        err.name = "BadRequestError";
+        throw err;
+      }
+      const agent = await getAgentForOrg(orgId, subjectId);
+      if (!agent) {
+        const err: any = new Error("Agent not found for this org");
+        err.name = "BadRequestError";
+        throw err;
+      }
+      // Normalize subjectId to canonical ID (in case caller used something else later)
+      subjectId = agent.id;
+    }
+
+    // 1) Always record + summarize at ORG level for quota & policy
+    const [plan, orgUsageResult, cfg] = await Promise.all([
       getPlanForOrgOrThrow(orgId),
       recordUsageAndGetSummary({
         orgId,
@@ -76,6 +108,20 @@ export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOpti
       loadPolicyConfig(),
     ]);
 
+    const { summary } = orgUsageResult;
+
+    // 2) If this call is for an AGENT (or MODEL), also record per-subject usage
+    if (subjectType === "AGENT" || subjectType === "MODEL") {
+      // Best-effort; we don't depend on its result
+      void recordUsageAndGetSummary({
+        orgId,
+        subjectType,
+        subjectId,
+        units: body.units,
+        endpoint: body.endpoint,
+      });
+    }
+
     // Compute effective abuse score (with decay) for this org
     const abuseScore = await getEffectiveAbuseScore(orgId, cfg);
 
@@ -86,6 +132,7 @@ export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOpti
       void bumpAbuseScore(orgId, Math.min(5, overshoot));
     }
 
+    // Policy decision is still ORG-level
     const decision = evaluateUsagePolicy({
       orgId,
       plan,
@@ -100,14 +147,26 @@ export async function usageRoutes(app: FastifyInstance, _opts: FastifyPluginOpti
     if (decision.type === "THROTTLE") usageThrottleTotal.inc();
     if (decision.type === "BLOCK") usageBlockTotal.inc();
 
+    // Log to audit trail with the *call's* subject (ORG or AGENT/MODEL)
     await logUsageDecision({
       orgId,
-      subjectType: "ORG",
-      subjectId: null,
+      subjectType,
+      subjectId,
       decision,
       units: body.units,
       endpoint: body.endpoint,
     });
+
+    // Log to usage_decisions table for analytics (ORG-level)
+    try {
+      await logUsageDecisionRow({
+        orgId,
+        plan,
+        decision,
+      });
+    } catch {
+      // Best-effort logging; don't fail the request
+    }
 
     return {
       decision: decision.type,

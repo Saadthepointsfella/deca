@@ -7,14 +7,22 @@ import { Card, CardHeader, CardBody } from "../../components/ui/Card";
 import { Table, THead, TBody } from "../../components/ui/Table";
 import Badge from "../../components/ui/Badge";
 
-type LeaderRow = { org_id:string; org_name:string; plan_tier:string|null; mtd_units:number };
-type ApiKeyRow = { org_id:string; org_name:string; key_count:number };
+type LeaderRow = { org_id: string; org_name: string; plan_tier: string | null; mtd_units: number };
+type ApiKeyRow = { org_id: string; org_name: string; key_count: number };
+type AbuseBucket = { label: string; count: number };
 
 type Overview = {
   usageLeaderboard: LeaderRow[];
-  tickets: { openTickets:number; breachedTickets:number };
-  decisions: { total:number; throttleCount:number; blockCount:number; throttlePct:number; blockPct:number };
+  tickets: { openTickets: number; breachedTickets: number };
+  decisions: {
+    total: number;
+    throttleCount: number;
+    blockCount: number;
+    throttlePct: number;
+    blockPct: number;
+  };
   apiKeys: ApiKeyRow[];
+  abuse?: { buckets: AbuseBucket[] }; // <- NEW, optional for backward compat
 };
 
 const grafanaUrl = process.env.NEXT_PUBLIC_GRAFANA_DASH_URL; // optional
@@ -52,7 +60,8 @@ export default function AdminPage() {
       <div className="max-w-md">
         <h2 className="text-lg font-semibold mb-2">Forbidden</h2>
         <p className="text-sm text-ink-400">
-          The admin dashboard is only available to <span className="font-mono">OWNER</span> or <span className="font-mono">ADMIN</span> roles.
+          The admin dashboard is only available to <span className="font-mono">OWNER</span> or{" "}
+          <span className="font-mono">ADMIN</span> roles.
         </p>
       </div>
     );
@@ -61,7 +70,8 @@ export default function AdminPage() {
   return (
     <div className="space-y-6">
       <div className="text-sm text-ink-400">
-        One-glance view of network health. Data is aggregated from usage, tickets, and API keys.
+        One-glance view of network health. Data is aggregated from usage, tickets, API keys, and abuse
+        signals.
       </div>
 
       {/* Top metrics */}
@@ -111,7 +121,11 @@ export default function AdminPage() {
                     <tr key={r.org_id}>
                       <td className="text-sm">{r.org_name}</td>
                       <td className="text-xs text-ink-400">
-                        {r.plan_tier ? r.plan_tier : <span className="text-ink-500">unassigned</span>}
+                        {r.plan_tier ? (
+                          r.plan_tier
+                        ) : (
+                          <span className="text-ink-500">unassigned</span>
+                        )}
                       </td>
                       <td className="text-right font-mono text-xs">
                         {r.mtd_units.toLocaleString()}
@@ -163,6 +177,31 @@ export default function AdminPage() {
         </Card>
       </div>
 
+      {/* Abuse distribution */}
+      {data?.abuse && (
+        <Card>
+          <CardHeader title="Abuse score distribution" />
+          <CardBody>
+            <div className="text-xs text-ink-400 mb-2">
+              Buckets of <span className="font-mono">org_abuse_scores</span> showing how many orgs are
+              clean vs under suspicion.
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
+              {data.abuse.buckets.map((b) => (
+                <div
+                  key={b.label}
+                  className="border border-ink-800 rounded-lg p-3 flex flex-col gap-1"
+                >
+                  <div className="text-ink-500">Score {b.label}</div>
+                  <div className="text-xl font-medium">{b.count}</div>
+                  <div className="text-ink-500 mt-1">{renderAbuseHint(b.label)}</div>
+                </div>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
       {/* Grafana embed slot */}
       <Card>
         <CardHeader title="Grafana / Prometheus" />
@@ -191,14 +230,13 @@ export default function AdminPage() {
   );
 }
 
-function MetricCard(props: { label:string; value:number|string; hint?:string; loading:boolean }) {
+function MetricCard(props: { label: string; value: number | string; hint?: string; loading: boolean }) {
   return (
     <Card>
       <CardHeader title={props.label} />
       <CardBody>
         <div className="text-2xl font-medium">
-          {props.loading && typeof props.value === "number" && props.value === 0
-            ? "…" : props.value}
+          {props.loading && typeof props.value === "number" && props.value === 0 ? "…" : props.value}
         </div>
         {props.hint && <div className="text-xs text-ink-400 mt-1">{props.hint}</div>}
       </CardBody>
@@ -209,4 +247,19 @@ function MetricCard(props: { label:string; value:number|string; hint?:string; lo
 function formatPct(v: number | undefined): string {
   if (v == null || Number.isNaN(v)) return "0%";
   return `${v.toFixed(1)}%`;
+}
+
+function renderAbuseHint(label: string): string {
+  switch (label) {
+    case "0":
+      return "No current abuse signal for these orgs.";
+    case "0–3":
+      return "Mild anomalies; keep an eye on them.";
+    case "3–10":
+      return "Repeated suspicious patterns; policy will start tightening.";
+    case ">10":
+      return "Persistent abuse; these orgs are heavily penalized.";
+    default:
+      return "Abuse score bucket.";
+  }
 }
