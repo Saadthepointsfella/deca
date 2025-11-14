@@ -37,3 +37,6 @@ export function requireRole(min: Role) {
     done();
   };
 }
+
+// Convenience: require ADMIN or OWNER
+export const requireAdmin = requireRole("ADMIN");

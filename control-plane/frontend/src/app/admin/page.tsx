@@ -6,6 +6,7 @@ import { api } from "../../lib/apiClient";
 import { Card, CardHeader, CardBody } from "../../components/ui/Card";
 import { Table, THead, TBody } from "../../components/ui/Table";
 import Badge from "../../components/ui/Badge";
+import Button from "../../components/ui/Button";
 
 type LeaderRow = { org_id: string; org_name: string; plan_tier: string | null; mtd_units: number };
 type ApiKeyRow = { org_id: string; org_name: string; key_count: number };
@@ -26,6 +27,7 @@ type Overview = {
 };
 
 const grafanaUrl = process.env.NEXT_PUBLIC_GRAFANA_DASH_URL; // optional
+const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
 export default function AdminPage() {
   const { data: session, status } = useSession();
@@ -35,6 +37,26 @@ export default function AdminPage() {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const [demoEnabled, setDemoEnabled] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
+  const [demoStatusLoading, setDemoStatusLoading] = useState(false);
+
+  // Load demo status
+  useEffect(() => {
+    if (!canAdmin || !isDemoMode) return;
+    (async () => {
+      try {
+        setDemoStatusLoading(true);
+        const result = await api.getDemoStatus();
+        setDemoEnabled(result.enabled);
+      } catch (e: any) {
+        console.error("Failed to load demo status:", e);
+      } finally {
+        setDemoStatusLoading(false);
+      }
+    })();
+  }, [canAdmin, isDemoMode]);
 
   useEffect(() => {
     if (!canAdmin) return;
@@ -50,6 +72,29 @@ export default function AdminPage() {
       }
     })();
   }, [canAdmin]);
+
+  const handleDemoToggle = async () => {
+    try {
+      setDemoLoading(true);
+      setErr(null);
+
+      if (demoEnabled) {
+        await api.disableDemo();
+      } else {
+        await api.enableDemo();
+      }
+
+      setDemoEnabled(!demoEnabled);
+
+      // Refresh overview data
+      const overview = await api.getAdminOverview();
+      setData(overview);
+    } catch (e: any) {
+      setErr(e.message ?? "Failed to toggle demo data");
+    } finally {
+      setDemoLoading(false);
+    }
+  };
 
   if (status === "loading") {
     return <div className="text-sm text-ink-400">Checking session…</div>;
@@ -73,6 +118,47 @@ export default function AdminPage() {
         One-glance view of network health. Data is aggregated from usage, tickets, API keys, and abuse
         signals.
       </div>
+
+      {/* Demo mode controls */}
+      {isDemoMode && (
+        <Card>
+          <CardHeader title="Demo Mode" />
+          <CardBody>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <p className="text-sm text-ink-400 mb-2">
+                  Toggle demo mode to seed or clear demo data (3 orgs, usage history with spikes, and tickets).
+                </p>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-ink-500">Status:</span>
+                  {demoStatusLoading ? (
+                    <span className="text-ink-400">Loading...</span>
+                  ) : (
+                    <span className={demoEnabled ? "text-green-400" : "text-ink-500"}>
+                      {demoEnabled ? "Enabled" : "Disabled"}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={demoEnabled}
+                  onChange={handleDemoToggle}
+                  disabled={demoLoading || demoStatusLoading}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-ink-800 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ink-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-ink-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-ink-100 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
+                {demoLoading && (
+                  <span className="ml-2 text-xs text-ink-400">
+                    {demoEnabled ? "Disabling..." : "Enabling..."}
+                  </span>
+                )}
+              </label>
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {/* Top metrics */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

@@ -277,5 +277,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  // -------- Demo Mode (ADMIN only) --------
+  getDemoStatus: () =>
+    request<{ enabled: boolean }>("/demo/status"),
+
+  enableDemo: () =>
+    request<{ success: true; message: string }>("/demo/enable", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
+  disableDemo: () =>
+    request<{ success: true; message: string }>("/demo/disable", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
 };
 

@@ -24,6 +24,7 @@ export const config = {
   // Feature flags
   metricsEnabled: process.env.METRICS_ENABLED !== "false",
   requestLogging: process.env.REQUEST_LOGGING !== "false",
+  demoMode: process.env.DEMO_MODE === "true",
 
   // 🔐 Auth (Phase 2)
   jwtSecret: requireEnv("JWT_SECRET"),

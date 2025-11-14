@@ -22,10 +22,20 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     role === "OWNER" ||
     role === "ADMIN";
 
+  const isDemo = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+
   return (
     <html lang="en">
       <body className="min-h-screen">
         <SessionProvider>
+          {/* Demo mode banner */}
+          {isDemo && (
+            <div className="w-full bg-ink-900 border-b border-ink-700 text-2xs text-ink-300 px-3 py-1 flex justify-between">
+              <span>Demo mode — seeded plans, orgs, usage, and tickets.</span>
+              <span className="font-mono text-ink-500">DEMO</span>
+            </div>
+          )}
+
           {/* Compact monochrome grid layout */}
           <div className="min-h-screen grid grid-cols-[220px_1fr]">
             <aside className="border-r border-ink-800 bg-ink-950">

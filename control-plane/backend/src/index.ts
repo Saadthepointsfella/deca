@@ -21,6 +21,8 @@ import { apiKeysRoutes } from "./apikeys/routes";
 import { tryAttachApiKey } from "./auth/apiKeyGuard";
 import { allow } from "./shared/rateLimit";
 import { openapiSpec } from "./openapi/spec";
+import { seedDemoData } from "./demo/seedDemo";
+import { demoRoutes } from "./demo/routes";
 
 async function buildServer() {
   const app = Fastify({
@@ -105,6 +107,7 @@ async function buildServer() {
   app.register(auditRoutes, { prefix: "/api" });
   app.register(apiKeysRoutes, { prefix: "/api" });
   app.register(agentsRoutes, { prefix: "/api" });
+  app.register(demoRoutes, { prefix: "/api" });
 
   // Centralized error handler (maps domain/validation → HTTP codes)
   app.setErrorHandler(errorHandler);
