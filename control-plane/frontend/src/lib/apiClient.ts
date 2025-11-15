@@ -66,16 +66,9 @@ function qs(params: Record<string, string | number | boolean | undefined>) {
   return s ? `?${s}` : "";
 }
 
-// Shared type for policy config
-type PolicyConfigDTO = {
-  spike_sensitivity: {
-    FREE: number;
-    PRO: number;
-    ENTERPRISE: number;
-  };
-  overdraft_factor: number;
-  free_tier_reserve: number;
-};
+// Shared type for policy config — now using PolicyConfigV2 shape from backend.
+// We keep it loose on the frontend and let the backend be the source of truth.
+type PolicyConfigDTO = any;
 
 export const api = {
   // -------- Orgs / Plans --------
@@ -235,7 +228,47 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  // -------- Metrics / Operator console --------
+  getMetricsSummary: () =>
+    request<{
+      usage_last_24h: {
+        per_tier: Record<
+          string,
+          {
+            total: number;
+            allow: number;
+            throttle: number;
+            block: number;
+            throttlePct: number;
+            blockPct: number;
+          }
+        >;
+      };
+      support: {
+        by_tier: Record<
+          string,
+          {
+            open: number;
+            breachedOpen: number;
+            breachedResolved24h?: number;
+          }
+        >;
+      };
+      policy_changes_last_24h: {
+        by_role: Record<string, number>;
+      };
+      abuse: {
+        top_orgs: {
+          org_id: string;
+          name: string;
+          plan_tier: string;
+          score: number;
+        }[];
+      };
+    }>("/metrics/summary"),
+
   // -------- Admin (OWNER/ADMIN) --------
+  // (Legacy overview; can keep if your backend still serves it)
   getAdminOverview: () =>
     request<{
       usageLeaderboard: {
@@ -261,11 +294,17 @@ export const api = {
         key_count: number;
       }[];
     }>("/admin/overview"),
- // ...existing
+
+  // -------- Agents (V2 shape) --------
   listAgents: (orgId: string) =>
-    request<{ agents: { id: string; name: string; description: string | null; model_key: string | null }[] }>(
-      `/agents?orgId=${encodeURIComponent(orgId)}`
-    ),
+    request<{
+      agents: {
+        id: string;
+        name: string;
+        description: string | null;
+        model_key: string | null;
+      }[];
+    }>(`/agents?orgId=${encodeURIComponent(orgId)}`),
 
   createAgent: (payload: {
     orgId: string;
@@ -294,4 +333,3 @@ export const api = {
       body: JSON.stringify({}),
     }),
 };
-

@@ -7,6 +7,8 @@ import type { PolicyConfigV2, Tier } from "./types";
 import { evaluateUsagePolicy } from "./usagePolicy";
 import { getPlanForOrgOrThrow } from "../plans/service";
 import { getEffectiveAbuseScore } from "./abuse.store";
+import { getDb } from "../shared/db";
+
 
 // For now we accept any JSON object and rely on our own validation
 const anyCfg = z.any();

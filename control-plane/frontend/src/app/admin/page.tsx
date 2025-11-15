@@ -5,25 +5,42 @@ import { useSession } from "next-auth/react";
 import { api } from "../../lib/apiClient";
 import { Card, CardHeader, CardBody } from "../../components/ui/Card";
 import { Table, THead, TBody } from "../../components/ui/Table";
-import Badge from "../../components/ui/Badge";
-import Button from "../../components/ui/Button";
 
-type LeaderRow = { org_id: string; org_name: string; plan_tier: string | null; mtd_units: number };
-type ApiKeyRow = { org_id: string; org_name: string; key_count: number };
-type AbuseBucket = { label: string; count: number };
-
-type Overview = {
-  usageLeaderboard: LeaderRow[];
-  tickets: { openTickets: number; breachedTickets: number };
-  decisions: {
-    total: number;
-    throttleCount: number;
-    blockCount: number;
-    throttlePct: number;
-    blockPct: number;
+type Metrics = {
+  usage_last_24h: {
+    per_tier: Record<
+      string,
+      {
+        total: number;
+        allow: number;
+        throttle: number;
+        block: number;
+        throttlePct: number;
+        blockPct: number;
+      }
+    >;
   };
-  apiKeys: ApiKeyRow[];
-  abuse?: { buckets: AbuseBucket[] }; // <- NEW, optional for backward compat
+  support: {
+    by_tier: Record<
+      string,
+      {
+        open: number;
+        breachedOpen: number;
+        breachedResolved24h?: number;
+      }
+    >;
+  };
+  policy_changes_last_24h: {
+    by_role: Record<string, number>;
+  };
+  abuse: {
+    top_orgs: {
+      org_id: string;
+      name: string;
+      plan_tier: string;
+      score: number;
+    }[];
+  };
 };
 
 const grafanaUrl = process.env.NEXT_PUBLIC_GRAFANA_DASH_URL; // optional
@@ -34,13 +51,22 @@ export default function AdminPage() {
   const role = (session as any)?.role as string | undefined;
   const canAdmin = role === "OWNER" || role === "ADMIN";
 
-  const [data, setData] = useState<Overview | null>(null);
+  const [data, setData] = useState<Metrics | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const [demoEnabled, setDemoEnabled] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoStatusLoading, setDemoStatusLoading] = useState(false);
+
+  // Derived aggregates
+  const {
+    totalDecisions,
+    throttlePct,
+    blockPct,
+    openTickets,
+    breachedOpen,
+  } = computeAggregates(data);
 
   // Load demo status
   useEffect(() => {
@@ -56,17 +82,19 @@ export default function AdminPage() {
         setDemoStatusLoading(false);
       }
     })();
-  }, [canAdmin, isDemoMode]);
+  }, [canAdmin]);
 
+  // Load metrics summary
   useEffect(() => {
     if (!canAdmin) return;
     (async () => {
       try {
         setLoading(true);
-        const res = await api.getAdminOverview();
+        setErr(null);
+        const res = await api.getMetricsSummary();
         setData(res);
       } catch (e: any) {
-        setErr(e.message ?? "Failed");
+        setErr(e.message ?? "Failed to load metrics");
       } finally {
         setLoading(false);
       }
@@ -86,8 +114,8 @@ export default function AdminPage() {
 
       setDemoEnabled(!demoEnabled);
 
-      // Refresh overview data
-      const overview = await api.getAdminOverview();
+      // Refresh metrics after seeding/clearing demo data
+      const overview = await api.getMetricsSummary();
       setData(overview);
     } catch (e: any) {
       setErr(e.message ?? "Failed to toggle demo data");
@@ -103,9 +131,10 @@ export default function AdminPage() {
   if (!canAdmin) {
     return (
       <div className="max-w-md">
-        <h2 className="text-lg font-semibold mb-2">Forbidden</h2>
-        <p className="text-sm text-ink-400">
-          The admin dashboard is only available to <span className="font-mono">OWNER</span> or{" "}
+        <h2 className="text-sm font-semibold mb-2 text-ink-50">Forbidden</h2>
+        <p className="text-xs text-ink-400">
+          The operator console is only available to{" "}
+          <span className="font-mono">OWNER</span> or{" "}
           <span className="font-mono">ADMIN</span> roles.
         </p>
       </div>
@@ -114,27 +143,32 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <div className="text-sm text-ink-400">
-        One-glance view of network health. Data is aggregated from usage, tickets, API keys, and abuse
-        signals.
+      <div>
+        <h1 className="text-sm font-semibold text-ink-50">Operator console</h1>
+        <p className="text-[11px] text-ink-500 mt-1 max-w-xl">
+          One-glance view of network health across usage decisions, SLAs, and
+          abuse scores. All metrics are aggregated over the last 24 hours unless
+          stated otherwise.
+        </p>
       </div>
 
       {/* Demo mode controls */}
       {isDemoMode && (
         <Card>
-          <CardHeader title="Demo Mode" />
+          <CardHeader title="Demo mode" />
           <CardBody>
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start justify-between gap-4 text-xs">
               <div className="flex-1">
-                <p className="text-sm text-ink-400 mb-2">
-                  Toggle demo mode to seed or clear demo data (3 orgs, usage history with spikes, and tickets).
+                <p className="text-ink-400 mb-2">
+                  Seed or clear demo data (orgs, usage with spikes, and tickets)
+                  to quickly showcase the console.
                 </p>
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex items-center gap-2">
                   <span className="text-ink-500">Status:</span>
                   {demoStatusLoading ? (
-                    <span className="text-ink-400">Loading...</span>
+                    <span className="text-ink-400">Loading…</span>
                   ) : (
-                    <span className={demoEnabled ? "text-green-400" : "text-ink-500"}>
+                    <span className={demoEnabled ? "text-emerald-400" : "text-ink-500"}>
                       {demoEnabled ? "Enabled" : "Disabled"}
                     </span>
                   )}
@@ -150,8 +184,8 @@ export default function AdminPage() {
                 />
                 <div className="w-11 h-6 bg-ink-800 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ink-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-ink-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-ink-100 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
                 {demoLoading && (
-                  <span className="ml-2 text-xs text-ink-400">
-                    {demoEnabled ? "Disabling..." : "Enabling..."}
+                  <span className="ml-2 text-[11px] text-ink-400">
+                    {demoEnabled ? "Disabling…" : "Enabling…"}
                   </span>
                 )}
               </label>
@@ -164,136 +198,184 @@ export default function AdminPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
           label="Decisions (24h)"
-          value={data?.decisions.total ?? 0}
-          hint="Total ALLOW/THROTTLE/BLOCK decisions logged"
+          value={totalDecisions}
+          hint="Total ALLOW/THROTTLE/BLOCK"
           loading={loading}
         />
         <MetricCard
           label="Throttle % (24h)"
-          value={formatPct(data?.decisions.throttlePct)}
-          hint={`${data?.decisions.throttleCount ?? 0} throttles`}
+          value={formatPct(throttlePct)}
+          hint="Share of requests throttled"
           loading={loading}
         />
         <MetricCard
           label="Block % (24h)"
-          value={formatPct(data?.decisions.blockPct)}
-          hint={`${data?.decisions.blockCount ?? 0} blocks`}
+          value={formatPct(blockPct)}
+          hint="Share of requests blocked"
           loading={loading}
         />
         <MetricCard
           label="Open tickets"
-          value={data?.tickets.openTickets ?? 0}
-          hint={`${data?.tickets.breachedTickets ?? 0} breached`}
+          value={openTickets}
+          hint={`${breachedOpen} past SLA`}
           loading={loading}
         />
       </div>
 
-      {/* Usage leaderboard + API keys */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2">
-          <CardHeader title="Usage per org (MTD)" />
-          <CardBody>
-            {loading && !data ? (
-              <div className="text-sm text-ink-400">Loading…</div>
-            ) : (
-              <Table>
-                <THead>
-                  <th>Org</th>
-                  <th>Plan</th>
-                  <th className="text-right">MTD units</th>
-                </THead>
-                <TBody>
-                  {data?.usageLeaderboard.map((r) => (
-                    <tr key={r.org_id}>
-                      <td className="text-sm">{r.org_name}</td>
-                      <td className="text-xs text-ink-400">
-                        {r.plan_tier ? (
-                          r.plan_tier
-                        ) : (
-                          <span className="text-ink-500">unassigned</span>
-                        )}
-                      </td>
-                      <td className="text-right font-mono text-xs">
-                        {r.mtd_units.toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                  {data?.usageLeaderboard.length === 0 && (
-                    <tr>
-                      <td colSpan={3} className="text-sm text-ink-400 p-3">
-                        No usage recorded yet.
-                      </td>
-                    </tr>
-                  )}
-                </TBody>
-              </Table>
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader title="Active API keys" />
-          <CardBody>
-            {loading && !data ? (
-              <div className="text-sm text-ink-400">Loading…</div>
-            ) : (
-              <Table>
-                <THead>
-                  <th>Org</th>
-                  <th className="text-right">Keys</th>
-                </THead>
-                <TBody>
-                  {data?.apiKeys.map((k) => (
-                    <tr key={k.org_id}>
-                      <td className="text-sm">{k.org_name}</td>
-                      <td className="text-right text-sm">{k.key_count}</td>
-                    </tr>
-                  ))}
-                  {data?.apiKeys.length === 0 && (
-                    <tr>
-                      <td colSpan={2} className="text-sm text-ink-400 p-3">
-                        No active keys.
-                      </td>
-                    </tr>
-                  )}
-                </TBody>
-              </Table>
-            )}
-          </CardBody>
-        </Card>
-      </div>
-
-      {/* Abuse distribution */}
-      {data?.abuse && (
-        <Card>
-          <CardHeader title="Abuse score distribution" />
-          <CardBody>
-            <div className="text-xs text-ink-400 mb-2">
-              Buckets of <span className="font-mono">org_abuse_scores</span> showing how many orgs are
-              clean vs under suspicion.
+      {/* Usage decisions by tier */}
+      <Card>
+        <CardHeader
+          title="Usage decisions by tier (24h)"
+          description="Throttle and block rates for each plan tier."
+        />
+        <CardBody>
+          {loading && !data ? (
+            <div className="text-xs text-ink-400">Loading…</div>
+          ) : !data ? (
+            <div className="text-xs text-ink-400">
+              No usage decisions recorded in the last 24 hours.
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
-              {data.abuse.buckets.map((b) => (
-                <div
-                  key={b.label}
-                  className="border border-ink-800 rounded-lg p-3 flex flex-col gap-1"
-                >
-                  <div className="text-ink-500">Score {b.label}</div>
-                  <div className="text-xl font-medium">{b.count}</div>
-                  <div className="text-ink-500 mt-1">{renderAbuseHint(b.label)}</div>
-                </div>
-              ))}
+          ) : (
+            <Table>
+              <THead>
+                <th className="text-left text-xs">Tier</th>
+                <th className="text-right text-xs">Decisions</th>
+                <th className="text-right text-xs">Throttle %</th>
+                <th className="text-right text-xs">Block %</th>
+              </THead>
+              <TBody>
+                {Object.entries(data.usage_last_24h.per_tier).map(
+                  ([tier, v]) => (
+                    <tr key={tier}>
+                      <td className="text-xs text-ink-100">{tier}</td>
+                      <td className="text-right text-xs font-mono">
+                        {v.total.toLocaleString()}
+                      </td>
+                      <td className="text-right text-xs text-ink-100">
+                        {v.throttlePct.toFixed(1)}%
+                      </td>
+                      <td className="text-right text-xs text-ink-100">
+                        {v.blockPct.toFixed(1)}%
+                      </td>
+                    </tr>
+                  )
+                )}
+              </TBody>
+            </Table>
+          )}
+        </CardBody>
+      </Card>
+
+      {/* Support health */}
+      <Card>
+        <CardHeader
+          title="Support health"
+          description="Open tickets and SLA breaches by tier."
+        />
+        <CardBody>
+          {loading && !data ? (
+            <div className="text-xs text-ink-400">Loading…</div>
+          ) : !data ? (
+            <div className="text-xs text-ink-400">
+              No ticket data available yet.
             </div>
-          </CardBody>
-        </Card>
-      )}
+          ) : (
+            <Table>
+              <THead>
+                <th className="text-left text-xs">Tier</th>
+                <th className="text-right text-xs">Open</th>
+                <th className="text-right text-xs">Open &gt; SLA</th>
+                <th className="text-right text-xs">Breached resolved (24h)</th>
+              </THead>
+              <TBody>
+                {Object.entries(data.support.by_tier).map(([tier, v]) => (
+                  <tr key={tier}>
+                    <td className="text-xs text-ink-100">{tier}</td>
+                    <td className="text-right text-xs">{v.open}</td>
+                    <td className="text-right text-xs">{v.breachedOpen}</td>
+                    <td className="text-right text-xs">
+                      {v.breachedResolved24h ?? 0}
+                    </td>
+                  </tr>
+                ))}
+              </TBody>
+            </Table>
+          )}
+        </CardBody>
+      </Card>
+
+      {/* Top abuse orgs */}
+      <Card>
+        <CardHeader
+          title="Top abuse scores"
+          description="Orgs with the highest abuse scores; policy will automatically tighten for them."
+        />
+        <CardBody>
+          {!data || data.abuse.top_orgs.length === 0 ? (
+            <div className="text-xs text-ink-400">
+              No orgs with recorded abuse scores yet.
+            </div>
+          ) : (
+            <Table>
+              <THead>
+                <th className="text-left text-xs">Org</th>
+                <th className="text-left text-xs">Plan</th>
+                <th className="text-right text-xs">Abuse score</th>
+              </THead>
+              <TBody>
+                {data.abuse.top_orgs.map((o) => (
+                  <tr key={o.org_id}>
+                    <td className="text-xs text-ink-100">{o.name}</td>
+                    <td className="text-xs text-ink-400">{o.plan_tier}</td>
+                    <td className="text-right text-xs text-ink-100">
+                      {o.score.toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </TBody>
+            </Table>
+          )}
+        </CardBody>
+      </Card>
+
+      {/* Policy changes last 24h */}
+      <Card>
+        <CardHeader
+          title="Policy changes (24h)"
+          description="Who has been editing the mechanism config."
+        />
+        <CardBody>
+          {!data || Object.keys(data.policy_changes_last_24h.by_role).length === 0 ? (
+            <div className="text-xs text-ink-400">
+              No policy changes recorded in the last 24 hours.
+            </div>
+          ) : (
+            <Table>
+              <THead>
+                <th className="text-left text-xs">Role</th>
+                <th className="text-right text-xs">Changes</th>
+              </THead>
+              <TBody>
+                {Object.entries(data.policy_changes_last_24h.by_role).map(
+                  ([role, count]) => (
+                    <tr key={role}>
+                      <td className="text-xs text-ink-100">{role}</td>
+                      <td className="text-right text-xs">{count}</td>
+                    </tr>
+                  )
+                )}
+              </TBody>
+            </Table>
+          )}
+        </CardBody>
+      </Card>
 
       {/* Grafana embed slot */}
       <Card>
         <CardHeader title="Grafana / Prometheus" />
         <CardBody>
           {grafanaUrl ? (
-            <div className="h-72 border border-ink-800 rounded-xl2 overflow-hidden">
+            <div className="h-72 border border-ink-800 rounded-xl overflow-hidden">
               <iframe
                 src={grafanaUrl}
                 className="w-full h-full"
@@ -302,29 +384,44 @@ export default function AdminPage() {
               />
             </div>
           ) : (
-            <div className="text-sm text-ink-400">
-              Set <code className="font-mono">NEXT_PUBLIC_GRAFANA_DASH_URL</code> to embed your Grafana
-              dashboard here (e.g. a panel showing <code>usage_throttle_total</code>,{" "}
-              <code>usage_block_total</code>, request latency, etc.).
+            <div className="text-xs text-ink-400">
+              Set{" "}
+              <code className="font-mono">NEXT_PUBLIC_GRAFANA_DASH_URL</code>{" "}
+              to embed your Grafana dashboard here (for deeper metrics like
+              latency, error rates, etc).
             </div>
           )}
         </CardBody>
       </Card>
 
-      {err && <div className="text-xs text-red-400">{err}</div>}
+      {err && (
+        <div className="text-[11px] text-red-400 border border-red-900 rounded px-3 py-2 bg-red-950/40">
+          {err}
+        </div>
+      )}
     </div>
   );
 }
 
-function MetricCard(props: { label: string; value: number | string; hint?: string; loading: boolean }) {
+function MetricCard(props: {
+  label: string;
+  value: number | string;
+  hint?: string;
+  loading: boolean;
+}) {
+  const { label, value, hint, loading } = props;
   return (
     <Card>
-      <CardHeader title={props.label} />
+      <CardHeader title={label} />
       <CardBody>
-        <div className="text-2xl font-medium">
-          {props.loading && typeof props.value === "number" && props.value === 0 ? "…" : props.value}
+        <div className="text-xl font-medium">
+          {loading && typeof value === "number" && value === 0 ? "…" : value}
         </div>
-        {props.hint && <div className="text-xs text-ink-400 mt-1">{props.hint}</div>}
+        {hint && (
+          <div className="text-[11px] text-ink-400 mt-1">
+            {hint}
+          </div>
+        )}
       </CardBody>
     </Card>
   );
@@ -335,17 +432,44 @@ function formatPct(v: number | undefined): string {
   return `${v.toFixed(1)}%`;
 }
 
-function renderAbuseHint(label: string): string {
-  switch (label) {
-    case "0":
-      return "No current abuse signal for these orgs.";
-    case "0–3":
-      return "Mild anomalies; keep an eye on them.";
-    case "3–10":
-      return "Repeated suspicious patterns; policy will start tightening.";
-    case ">10":
-      return "Persistent abuse; these orgs are heavily penalized.";
-    default:
-      return "Abuse score bucket.";
+function computeAggregates(data: Metrics | null) {
+  if (!data) {
+    return {
+      totalDecisions: 0,
+      throttlePct: 0,
+      blockPct: 0,
+      openTickets: 0,
+      breachedOpen: 0,
+    };
   }
+
+  let totalDecisions = 0;
+  let totalThrottle = 0;
+  let totalBlock = 0;
+
+  for (const tierStats of Object.values(data.usage_last_24h.per_tier)) {
+    totalDecisions += tierStats.total;
+    totalThrottle += tierStats.throttle;
+    totalBlock += tierStats.block;
+  }
+
+  let openTickets = 0;
+  let breachedOpen = 0;
+  for (const v of Object.values(data.support.by_tier)) {
+    openTickets += v.open;
+    breachedOpen += v.breachedOpen;
+  }
+
+  const throttlePct =
+    totalDecisions > 0 ? (totalThrottle / totalDecisions) * 100 : 0;
+  const blockPct =
+    totalDecisions > 0 ? (totalBlock / totalDecisions) * 100 : 0;
+
+  return {
+    totalDecisions,
+    throttlePct,
+    blockPct,
+    openTickets,
+    breachedOpen,
+  };
 }

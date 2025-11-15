@@ -1,39 +1,68 @@
 // backend/src/auth/guards.ts
-import type { FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyRequest, FastifyReply } from "fastify";
 import { verifyToken } from "./service";
-import { roleAtLeast, type Role } from "../shared/roles";
+import type { JwtUser } from "./types";
+import type { Role } from "../shared/roles";
 
 declare module "fastify" {
   interface FastifyRequest {
-    user?: {
-      id: string; org_id: string; name: string; email: string; role: Role;
-    };
+    user?: JwtUser;
   }
 }
 
-export function requireAuth(req: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) {
-  const h = req.headers.authorization;
-  if (!h || !h.startsWith("Bearer ")) {
-    reply.code(401).send({ error: { code: "UNAUTHORIZED", message: "Missing bearer token" } });
-    return;
+export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
+  const header = req.headers["authorization"];
+  if (!header || !header.startsWith("Bearer ")) {
+    return reply.status(401).send({
+      error: {
+        code: "UNAUTHORIZED",
+        message: "Missing Authorization bearer token",
+      },
+    });
   }
+
+  const token = header.slice("Bearer ".length).trim();
   try {
-    const token = h.slice("Bearer ".length);
-    const u = verifyToken(token);
-    req.user = u;
-    done();
-  } catch {
-    reply.code(401).send({ error: { code: "UNAUTHORIZED", message: "Invalid token" } });
+    const user = verifyToken(token);
+    req.user = user;
+  } catch (e: any) {
+    return reply.status(401).send({
+      error: {
+        code: "UNAUTHORIZED",
+        message: "Invalid or expired token",
+        details: e?.message ?? String(e),
+      },
+    });
   }
 }
 
-export function requireRole(min: Role) {
-  return (req: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
-    if (!req.user) return requireAuth(req, reply, done);
-    if (!roleAtLeast(req.user.role, min)) {
-      reply.code(403).send({ error: { code: "FORBIDDEN", message: `Requires role >= ${min}` } });
-      return;
+// Require that the user has at least `minRole`.
+const ROLE_ORDER: Role[] = ["VIEWER", "AGENT", "ADMIN", "OWNER"];
+
+export function requireRole(minRole: Role) {
+  return (req: FastifyRequest, reply: FastifyReply, done: () => void) => {
+    const u = req.user;
+    if (!u) {
+      return reply.status(401).send({
+        error: {
+          code: "UNAUTHORIZED",
+          message: "Authentication required",
+        },
+      });
     }
+
+    const userRoleIdx = ROLE_ORDER.indexOf(u.role);
+    const neededIdx = ROLE_ORDER.indexOf(minRole);
+
+    if (userRoleIdx < neededIdx) {
+      return reply.status(403).send({
+        error: {
+          code: "FORBIDDEN",
+          message: `Requires role ${minRole} or higher`,
+        },
+      });
+    }
+
     done();
   };
 }

@@ -9,6 +9,7 @@ import { logger } from "./shared/logger";
 import { assertDbConnection } from "./shared/db";
 import { errorHandler } from "./shared/errorMapper";
 import { registry, httpRequestDurationMs } from "./shared/metrics";
+import { metricsRoutes } from "./metrics/routes";
 
 import { authRoutes } from "./auth/routes";
 import { identityRoutes } from "./identity/routes";
@@ -96,7 +97,6 @@ async function buildServer() {
 
   // Domain routes
   app.register(policyRoutes,  { prefix: "/api" });
-
   app.register(authRoutes, { prefix: "/api" });
   app.register(identityRoutes, { prefix: "/api" });
   app.register(plansRoutes, { prefix: "/api" });
